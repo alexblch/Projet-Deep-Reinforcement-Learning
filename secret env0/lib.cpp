@@ -209,8 +209,8 @@ public:
         : env(env), learning_rate(learning_rate), discount_factor(discount_factor), exploration_rate(exploration_rate), exploration_decay(exploration_decay), min_exploration_rate(min_exploration_rate), episodes(episodes), gen(rd()) {}
 
     py::array_t<double> run() {
-        int num_states = env.attr("num_states")().cast<int>();
-        int num_actions = env.attr("num_actions")().cast<int>();
+        auto num_states = env.attr("num_states")().cast<int>();
+        auto num_actions = env.attr("num_actions")().cast<int>();
         py::array_t<double> q_table({num_states, num_actions});
         auto q_table_ptr = q_table.mutable_data();
         
@@ -225,10 +225,6 @@ public:
                 int action;
                 if (dis(gen) < exploration_rate) {
                     auto actions = env.attr("available_actions")().cast<std::vector<int>>();
-                    if (actions.empty()) {
-                        std::cerr << "No available actions!" << std::endl;
-                        break;
-                    }
                     std::uniform_int_distribution<> action_dis(0, actions.size() - 1);
                     action = actions[action_dis(gen)];
                 } else {
@@ -267,10 +263,9 @@ private:
     std::mt19937 gen;
 };
 
-// PolicyIteration Class Definition
 class PolicyIteration {
 public:
-    PolicyIteration(py::object env_class, double gamma = 0.99, double theta = 0.95)
+    PolicyIteration(py::object env_class, double gamma = 0.99, double theta = 1e-3)
         : env_class(env_class), gamma(gamma), theta(theta) {
         env = env_class();
         num_states = env.attr("num_states")().cast<int>();
@@ -278,11 +273,9 @@ public:
     }
 
     std::tuple<std::vector<int>, std::vector<double>> run() {
-        // Step 1: Initialize policy randomly
         std::vector<int> policy(num_states);
         std::generate(policy.begin(), policy.end(), [this]() { return rand() % num_actions; });
 
-        // Step 2: Policy Iteration
         std::vector<double> V(num_states, 0.0);
 
         while (true) {
@@ -322,7 +315,6 @@ private:
                 }
                 delta = std::max(delta, std::abs(v - V[s]));
                 V[s] = v;
-                std::cout << "Delta: " << delta << std::endl;
             }
             if (delta < theta) {
                 break;
@@ -359,7 +351,6 @@ private:
     }
 };
 
-// ValueIteration Class Definition
 class ValueIteration {
 public:
     ValueIteration(py::object env_class, double gamma = 0.99, double theta = 1e-3)
@@ -408,7 +399,6 @@ private:
         return A;
     }
 };
-
 // SARSA Class Definition
 class SARSA {
 public:
@@ -424,6 +414,7 @@ public:
         std::uniform_real_distribution<> dis(0.0, 1.0);
 
         for (int episode = 0; episode < episodes; ++episode) {
+            std::cout << "Episode " << episode + 1 << std::endl;
             env.attr("reset")();
             int state = env.attr("state_id")().cast<int>();
             auto actions = env.attr("available_actions")().cast<std::vector<int>>();
@@ -545,6 +536,71 @@ private:
     std::mt19937 gen;
 };
 
+class ExpectedSarsa {
+public:
+    ExpectedSarsa(py::object env_class, double alpha = 0.1, double gamma = 0.99, double epsilon = 0.1)
+        : env_class(env_class), alpha(alpha), gamma(gamma), epsilon(epsilon) {
+        env = env_class();
+        num_states = env.attr("num_states")().cast<int>();
+        num_actions = env.attr("num_actions")().cast<int>();
+        Q = std::vector<std::vector<double>>(num_states, std::vector<double>(num_actions, 0.0));
+    }
+
+    void run(int num_episodes) {
+        std::default_random_engine generator;
+        std::uniform_real_distribution<double> distribution(0.0, 1.0);
+
+        for (int episode = 0; episode < num_episodes; ++episode) {
+            int state = env.attr("reset")().cast<int>();
+            while (true) {
+                int action = select_action(state, distribution(generator));
+                auto step_result = env.attr("step")(action).cast<py::tuple>();
+                int next_state = step_result[0].cast<int>();
+                double reward = step_result[1].cast<double>();
+                bool done = step_result[2].cast<bool>();
+
+                double expected_value = 0.0;
+                for (int a = 0; a < num_actions; ++a) {
+                    double action_prob = (a == policy(next_state)) ? 1.0 - epsilon + (epsilon / num_actions) : (epsilon / num_actions);
+                    expected_value += action_prob * Q[next_state][a];
+                }
+
+                Q[state][action] += alpha * (reward + gamma * expected_value - Q[state][action]);
+
+                if (done) break;
+                state = next_state;
+            }
+        }
+    }
+
+    std::vector<std::vector<double>> get_Q() {
+        return Q;
+    }
+
+private:
+    py::object env_class;
+    py::object env;
+    double alpha;
+    double gamma;
+    double epsilon;
+    int num_states;
+    int num_actions;
+    std::vector<std::vector<double>> Q;
+
+    int select_action(int state, double random_value) {
+        if (random_value < epsilon) {
+            return std::uniform_int_distribution<int>(0, num_actions - 1)(generator);
+        }
+        return policy(state);
+    }
+
+    int policy(int state) {
+        return std::distance(Q[state].begin(), std::max_element(Q[state].begin(), Q[state].end()));
+    }
+
+    std::default_random_engine generator;
+};
+
 // Bindings
 PYBIND11_MODULE(lib, m) {
     py::class_<MonteCarloES>(m, "MonteCarloES")
@@ -566,7 +622,7 @@ PYBIND11_MODULE(lib, m) {
         .def(py::init<py::object, double, double>(),
              py::arg("env_class"),
              py::arg("gamma") = 0.99,
-             py::arg("theta") = 0.95)
+             py::arg("theta") = 1e-3)
         .def("run", &PolicyIteration::run);
 
     py::class_<OffPolicyMonteCarloControl>(m, "OffPolicyMonteCarloControl")
@@ -614,4 +670,9 @@ PYBIND11_MODULE(lib, m) {
              py::arg("min_exploration_rate") = 0.01,
              py::arg("episodes") = 10)
         .def("run", &DynaQ::run);
+
+     py::class_<ExpectedSarsa>(m, "ExpectedSarsa")
+        .def(py::init<py::object, double, double, double>(), py::arg("env_class"), py::arg("alpha") = 0.1, py::arg("gamma") = 0.99, py::arg("epsilon") = 0.1)
+        .def("run", &ExpectedSarsa::run)
+        .def("get_Q", &ExpectedSarsa::get_Q);
 }
