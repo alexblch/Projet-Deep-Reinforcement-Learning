@@ -399,6 +399,7 @@ private:
         return A;
     }
 };
+
 class SARSA {
 public:
     SARSA(py::object env, double learning_rate = 0.1, double discount_factor = 0.99, double exploration_rate = 1.0, double exploration_decay = 0.995, double min_exploration_rate = 0.01, int episodes = 10)
@@ -409,7 +410,10 @@ public:
         auto num_actions = env.attr("num_actions")().cast<int>();
         py::array_t<double> q_table({num_states, num_actions});
         auto q_table_ptr = q_table.mutable_data();
-        
+
+        // Initialize Q-table to zero
+        std::fill(q_table_ptr, q_table_ptr + num_states * num_actions, 0.0);
+
         std::uniform_real_distribution<> dis(0.0, 1.0);
 
         for (int episode = 0; episode < episodes; ++episode) {
@@ -417,7 +421,14 @@ public:
             int state = env.attr("state_id")().cast<int>();
             auto actions = env.attr("available_actions")().cast<std::vector<int>>();
             std::uniform_int_distribution<> action_dis(0, actions.size() - 1);
-            int action = dis(gen) < exploration_rate ? actions[action_dis(gen)] : std::distance(q_table_ptr + state * num_actions, std::max_element(q_table_ptr + state * num_actions, q_table_ptr + (state + 1) * num_actions));
+
+            int action;
+            if (!actions.empty()) {
+                action = dis(gen) < exploration_rate ? actions[action_dis(gen)] : std::distance(q_table_ptr + state * num_actions, std::max_element(q_table_ptr + state * num_actions, q_table_ptr + (state + 1) * num_actions));
+            } else {
+                std::cerr << "No available actions at the start of the episode." << std::endl;
+                continue;  // Skip this episode if no actions are available
+            }
 
             double total_reward = 0;
 
@@ -425,9 +436,23 @@ public:
                 env.attr("step")(action);
                 int next_state = env.attr("state_id")().cast<int>();
                 double reward = env.attr("score")().cast<double>();
+                
+                // Check for invalid reward values
+                if (std::isinf(reward) || std::isnan(reward)) {
+                    std::cerr << "Invalid reward value: " << reward << std::endl;
+                    break;
+                }
+
                 actions = env.attr("available_actions")().cast<std::vector<int>>();
                 action_dis = std::uniform_int_distribution<>(0, actions.size() - 1);
-                int next_action = dis(gen) < exploration_rate ? actions[action_dis(gen)] : std::distance(q_table_ptr + next_state * num_actions, std::max_element(q_table_ptr + next_state * num_actions, q_table_ptr + (next_state + 1) * num_actions));
+
+                int next_action;
+                if (!actions.empty()) {
+                    next_action = dis(gen) < exploration_rate ? actions[action_dis(gen)] : std::distance(q_table_ptr + next_state * num_actions, std::max_element(q_table_ptr + next_state * num_actions, q_table_ptr + (next_state + 1) * num_actions));
+                } else {
+                    std::cerr << "No available actions for the next state." << std::endl;
+                    break;  // End the episode if no actions are available for the next state
+                }
 
                 // Debug statements for current state, action, reward, next state, next action
                 std::cout << "State: " << state << ", Action: " << action << ", Reward: " << reward << ", Next State: " << next_state << ", Next Action: " << next_action << std::endl;
@@ -435,6 +460,9 @@ public:
                 double td_target = reward + discount_factor * q_table_ptr[next_state * num_actions + next_action];
                 double td_error = td_target - q_table_ptr[state * num_actions + action];
                 q_table_ptr[state * num_actions + action] += learning_rate * td_error;
+
+                // Optional: Limit values in Q-table
+                q_table_ptr[state * num_actions + action] = std::min(std::max(q_table_ptr[state * num_actions + action], -1e10), 1e10);
 
                 // Debug statement for Q-table update
                 std::cout << "Q(" << state << ", " << action << ") updated to: " << q_table_ptr[state * num_actions + action] << std::endl;
@@ -462,6 +490,9 @@ private:
     std::random_device rd;
     std::mt19937 gen;
 };
+
+
+
 
 // DynaQ Class Definition
 class DynaQ {
