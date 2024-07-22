@@ -70,7 +70,9 @@ class GridWorld:
     def length(self) -> Tuple[int, int]:
         return (5, 5)
     
-    
+    @staticmethod
+    def size() -> Tuple[int, int]:
+        return (5, 5)
 
 class GridWorldC:
     def __init__(self):
