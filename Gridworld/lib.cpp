@@ -265,22 +265,27 @@ private:
 
 class PolicyIteration {
 public:
-    PolicyIteration(py::object env_class, double gamma = 0.99, double theta = 1e-3)
+    PolicyIteration(py::object env_class, double gamma = 0.99, double theta = 1e-7)
         : env_class(env_class), gamma(gamma), theta(theta) {
+        // Initialisation de l'environnement
         env = env_class();
         num_states = env.attr("num_states")().cast<int>();
         num_actions = env.attr("num_actions")().cast<int>();
     }
 
     std::tuple<std::vector<int>, std::vector<double>> run() {
+        // Initialisation de la politique aléatoire
         std::vector<int> policy(num_states);
         std::generate(policy.begin(), policy.end(), [this]() { return rand() % num_actions; });
 
         std::vector<double> V(num_states, 0.0);
 
         while (true) {
+            // Évaluation de la politique
             policy_evaluation(policy, V);
+            // Amélioration de la politique
             bool policy_stable = policy_improvement(policy, V);
+            // Si la politique est stable, on peut arrêter
             if (policy_stable) {
                 break;
             }
@@ -302,20 +307,18 @@ private:
             double delta = 0;
             for (int s = 0; s < num_states; ++s) {
                 double v = 0;
-                for (int a = 0; a < num_actions; ++a) {
-                    if (policy[s] == a) {
-                        for (int next_state = 0; next_state < num_states; ++next_state) {
-                            for (int r_index = 0; r_index < env.attr("num_rewards")().cast<int>(); ++r_index) {
-                                double prob = env.attr("p")(s, a, next_state, r_index).cast<double>();
-                                double reward = env.attr("reward")(r_index).cast<double>();
-                                v += prob * (reward + gamma * V[next_state]);
-                            }
-                        }
+                // Évaluation de la valeur de l'état en suivant la politique actuelle
+                for (int next_state = 0; next_state < num_states; ++next_state) {
+                    for (int r_index = 0; r_index < env.attr("num_rewards")().cast<int>(); ++r_index) {
+                        double prob = env.attr("p")(s, policy[s], next_state, r_index).cast<double>();
+                        double reward = env.attr("reward")(r_index).cast<double>();
+                        v += prob * (reward + gamma * V[next_state]);
                     }
                 }
                 delta = std::max(delta, std::abs(v - V[s]));
                 V[s] = v;
             }
+            // Arrêter si le changement est inférieur au seuil theta
             if (delta < theta) {
                 break;
             }
@@ -353,7 +356,7 @@ private:
 
 class ValueIteration {
 public:
-    ValueIteration(py::object env_class, double gamma = 0.99, double theta = 1e-3)
+    ValueIteration(py::object env_class, double gamma = 0.99, double theta = 1e-7)
         : env_class(env_class), gamma(gamma), theta(theta) {
         env = env_class();
         num_states = env.attr("num_states")().cast<int>();
@@ -400,20 +403,18 @@ private:
     }
 };
 
+
 class SARSA {
 public:
-    SARSA(py::object env, double learning_rate = 0.1, double discount_factor = 0.99, double exploration_rate = 1.0, double exploration_decay = 0.995, double min_exploration_rate = 0.01, int episodes = 10)
-        : env(env), learning_rate(learning_rate), discount_factor(discount_factor), exploration_rate(exploration_rate), exploration_decay(exploration_decay), min_exploration_rate(min_exploration_rate), episodes(episodes), gen(rd()) {}
-
-    py::array_t<double> run() {
+    SARSA(py::object env, int episodes, double alpha = 0.1, double gamma = 0.99, double epsilon = 1.0, double epsilon_decay = 0.999, double min_epsilon = 0.01)
+        : env(env), episodes(episodes), alpha(alpha), gamma(gamma), epsilon(epsilon), epsilon_decay(epsilon_decay), min_epsilon(min_epsilon), gen(rd()) {
         auto num_states = env.attr("num_states")().cast<int>();
         auto num_actions = env.attr("num_actions")().cast<int>();
-        py::array_t<double> q_table({num_states, num_actions});
-        auto q_table_ptr = q_table.mutable_data();
+        q_table = py::array_t<double>({num_states, num_actions});
+        q_table_ptr = q_table.mutable_data();
+    }
 
-        // Initialize Q-table to zero
-        std::fill(q_table_ptr, q_table_ptr + num_states * num_actions, 0.0);
-
+    py::array_t<double> run() {
         std::uniform_real_distribution<> dis(0.0, 1.0);
 
         for (int episode = 0; episode < episodes; ++episode) {
@@ -421,78 +422,53 @@ public:
             int state = env.attr("state_id")().cast<int>();
             auto actions = env.attr("available_actions")().cast<std::vector<int>>();
             std::uniform_int_distribution<> action_dis(0, actions.size() - 1);
+            int action = dis(gen) < epsilon ? actions[action_dis(gen)] : greedy_action(state);
 
-            int action;
-            if (!actions.empty()) {
-                action = dis(gen) < exploration_rate ? actions[action_dis(gen)] : std::distance(q_table_ptr + state * num_actions, std::max_element(q_table_ptr + state * num_actions, q_table_ptr + (state + 1) * num_actions));
-            } else {
-                std::cerr << "No available actions at the start of the episode." << std::endl;
-                continue;  // Skip this episode if no actions are available
-            }
+            bool done = false;
 
-            double total_reward = 0;
-
-            while (!env.attr("is_game_over")().cast<bool>()) {
-                env.attr("step")(action);
-                int next_state = env.attr("state_id")().cast<int>();
-                double reward = env.attr("score")().cast<double>();
-                
-                // Check for invalid reward values
-                if (std::isinf(reward) || std::isnan(reward)) {
-                    std::cerr << "Invalid reward value: " << reward << std::endl;
-                    break;
-                }
+            while (!done) {
+                auto step_result = env.attr("step")(action).cast<py::tuple>();
+                int next_state = step_result[0].cast<int>();
+                double reward = step_result[1].cast<double>();
+                done = step_result[2].cast<bool>();
 
                 actions = env.attr("available_actions")().cast<std::vector<int>>();
                 action_dis = std::uniform_int_distribution<>(0, actions.size() - 1);
+                int next_action = dis(gen) < epsilon ? actions[action_dis(gen)] : greedy_action(next_state);
 
-                int next_action;
-                if (!actions.empty()) {
-                    next_action = dis(gen) < exploration_rate ? actions[action_dis(gen)] : std::distance(q_table_ptr + next_state * num_actions, std::max_element(q_table_ptr + next_state * num_actions, q_table_ptr + (next_state + 1) * num_actions));
-                } else {
-                    std::cerr << "No available actions for the next state." << std::endl;
-                    break;  // End the episode if no actions are available for the next state
-                }
-
-                // Debug statements for current state, action, reward, next state, next action
-                std::cout << "State: " << state << ", Action: " << action << ", Reward: " << reward << ", Next State: " << next_state << ", Next Action: " << next_action << std::endl;
-
-                double td_target = reward + discount_factor * q_table_ptr[next_state * num_actions + next_action];
-                double td_error = td_target - q_table_ptr[state * num_actions + action];
-                q_table_ptr[state * num_actions + action] += learning_rate * td_error;
-
-                // Optional: Limit values in Q-table
-                q_table_ptr[state * num_actions + action] = std::min(std::max(q_table_ptr[state * num_actions + action], -1e10), 1e10);
-
-                // Debug statement for Q-table update
-                std::cout << "Q(" << state << ", " << action << ") updated to: " << q_table_ptr[state * num_actions + action] << std::endl;
+                double td_target = reward + (done ? 0.0 : gamma * q_table_ptr[next_state * q_table.shape(1) + next_action]);
+                double td_error = td_target - q_table_ptr[state * q_table.shape(1) + action];
+                q_table_ptr[state * q_table.shape(1) + action] += alpha * td_error;
 
                 state = next_state;
                 action = next_action;
-                total_reward += reward;
             }
 
-            exploration_rate = std::max(min_exploration_rate, exploration_rate * exploration_decay);
-            std::cout << "Episode " << episode + 1 << ": Total Reward: " << total_reward << ", Exploration Rate: " << exploration_rate << std::endl;
+            epsilon = std::max(min_epsilon, epsilon * epsilon_decay);
         }
 
         return q_table;
     }
 
 private:
+    int greedy_action(int state) {
+        auto start = q_table_ptr + state * q_table.shape(1);
+        auto end = start + q_table.shape(1);
+        return std::distance(start, std::max_element(start, end));
+    }
+
     py::object env;
-    double learning_rate;
-    double discount_factor;
-    double exploration_rate;
-    double exploration_decay;
-    double min_exploration_rate;
     int episodes;
+    double alpha;
+    double gamma;
+    double epsilon;
+    double epsilon_decay;
+    double min_epsilon;
     std::random_device rd;
     std::mt19937 gen;
+    py::array_t<double> q_table;
+    double* q_table_ptr;
 };
-
-
-
 
 // DynaQ Class Definition
 class DynaQ {
@@ -657,7 +633,7 @@ PYBIND11_MODULE(lib, m) {
         .def(py::init<py::object, double, double>(),
              py::arg("env_class"),
              py::arg("gamma") = 0.99,
-             py::arg("theta") = 1e-3)
+             py::arg("theta") = 1e-7)
         .def("run", &PolicyIteration::run);
 
     py::class_<OffPolicyMonteCarloControl>(m, "OffPolicyMonteCarloControl")
@@ -680,18 +656,18 @@ PYBIND11_MODULE(lib, m) {
         .def(py::init<py::object, double, double>(),
              py::arg("env_class"),
              py::arg("gamma") = 0.99,
-             py::arg("theta") = 1e-3)
+             py::arg("theta") = 1e-7)
         .def("run", &ValueIteration::run);
 
     py::class_<SARSA>(m, "SARSA")
-        .def(py::init<py::object, double, double, double, double, double, int>(),
+        .def(py::init<py::object, int, double, double, double, double, double>(),
              py::arg("env"),
-             py::arg("learning_rate") = 0.1,
-             py::arg("discount_factor") = 0.99,
-             py::arg("exploration_rate") = 1.0,
-             py::arg("exploration_decay") = 0.995,
-             py::arg("min_exploration_rate") = 0.01,
-             py::arg("episodes") = 10)
+             py::arg("episodes") = 10000,
+             py::arg("alpha") = 0.1,
+             py::arg("gamma") = 0.99,
+             py::arg("epsilon") = 1.0,
+             py::arg("epsilon_decay") = 0.999,
+             py::arg("min_epsilon") = 0.01)
         .def("run", &SARSA::run);
 
     py::class_<DynaQ>(m, "DynaQ")

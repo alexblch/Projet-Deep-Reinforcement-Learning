@@ -265,7 +265,7 @@ private:
 
 class PolicyIteration {
 public:
-    PolicyIteration(py::object env_class, double gamma = 0.99, double theta = 1e-3)
+    PolicyIteration(py::object env_class, double gamma = 0.99, double theta = 1e-7)
         : env_class(env_class), gamma(gamma), theta(theta) {
         env = env_class();
         num_states = env.attr("num_states")().cast<int>();
@@ -353,7 +353,7 @@ private:
 
 class ValueIteration {
 public:
-    ValueIteration(py::object env_class, double gamma = 0.99, double theta = 1e-3)
+    ValueIteration(py::object env_class, double gamma = 0.99, double theta = 1e-7)
         : env_class(env_class), gamma(gamma), theta(theta) {
         env = env_class();
         num_states = env.attr("num_states")().cast<int>();
@@ -630,7 +630,7 @@ PYBIND11_MODULE(lib, m) {
         .def(py::init<py::object, double, double>(),
              py::arg("env_class"),
              py::arg("gamma") = 0.99,
-             py::arg("theta") = 1e-3)
+             py::arg("theta") = 1e-7)
         .def("run", &PolicyIteration::run);
 
     py::class_<OffPolicyMonteCarloControl>(m, "OffPolicyMonteCarloControl")
@@ -653,7 +653,7 @@ PYBIND11_MODULE(lib, m) {
         .def(py::init<py::object, double, double>(),
              py::arg("env_class"),
              py::arg("gamma") = 0.99,
-             py::arg("theta") = 1e-3)
+             py::arg("theta") = 1e-7)
         .def("run", &ValueIteration::run);
 
     py::class_<SARSA>(m, "SARSA")
